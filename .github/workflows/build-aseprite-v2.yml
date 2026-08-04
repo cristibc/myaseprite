@@ -36,7 +36,7 @@ jobs:
         if: steps.built-cache.outputs.cache-hit == 'true'
         run: echo "Latest upstream commit already built."
 
-        - name: Notify Discord of new upstream version
+      - name: Notify Discord of new upstream version
         if: steps.built-cache.outputs.cache-hit != 'true'
         env:
             WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
