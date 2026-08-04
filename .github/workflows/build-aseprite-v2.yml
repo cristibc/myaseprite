@@ -36,6 +36,17 @@ jobs:
         if: steps.built-cache.outputs.cache-hit == 'true'
         run: echo "Latest upstream commit already built."
 
+        - name: Notify Discord of new upstream version
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        env:
+            WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+            curl -H "Content-Type: application/json" \
+            -d "{
+                \"content\": \"🆕 New Aseprite version detected!\nCommit: ${{ steps.upstream.outputs.sha }}\nhttps://github.com/aseprite/aseprite/commit/${{ steps.upstream.outputs.sha }}\"
+            }" \
+            "$WEBHOOK"
+
       - name: Clone Aseprite
         if: steps.built-cache.outputs.cache-hit != 'true'
         shell: bash
