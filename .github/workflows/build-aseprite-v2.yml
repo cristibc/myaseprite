@@ -1,0 +1,162 @@
+name: Build Aseprite (Linux) V2
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SKIA_VERSION: m124-08a5439a6b
+  SKIA_URL: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check latest upstream commit
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/aseprite/aseprite.git HEAD | cut -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Look up already-built marker
+        id: built-cache
+        uses: actions/cache@v4
+        with:
+          path: .built
+          key: aseprite-built-${{ steps.upstream.outputs.sha }}
+
+      - name: Skip notice
+        if: steps.built-cache.outputs.cache-hit == 'true'
+        run: echo "Latest upstream commit already built."
+
+      - name: Clone Aseprite
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git init src
+          cd src
+          git remote add origin https://github.com/aseprite/aseprite.git
+          git fetch --depth=1 origin ${{ steps.upstream.outputs.sha }}
+          git checkout FETCH_HEAD
+          git submodule update --init --recursive
+
+      - name: Install dependencies
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            g++ \
+            cmake \
+            ninja-build \
+            ccache \
+            curl \
+            unzip \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libgl1-mesa-dev \
+            libfontconfig1-dev
+
+      - name: Cache Skia
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        id: skia-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/skia
+          key: skia-${{ env.SKIA_VERSION }}
+
+      - name: Download Skia
+        if: steps.built-cache.outputs.cache-hit != 'true' && steps.skia-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p deps/skia
+
+          curl -L "$SKIA_URL" -o skia.zip
+          unzip -q skia.zip -d deps/skia
+          rm skia.zip
+
+      - name: Cache build directory
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: src/build
+          key: build-${{ steps.upstream.outputs.sha }}-${{ env.SKIA_VERSION }}
+
+      - name: Cache ccache
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ env.SKIA_VERSION }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Configure
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          set -euo pipefail
+
+          mkdir -p src/build
+
+          cmake \
+            -S src \
+            -B src/build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_FLAGS:STRING=-stdlib=libstdc++ \
+            -DCMAKE_EXE_LINKER_FLAGS:STRING=-stdlib=libstdc++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLAF_BACKEND=skia \
+            -DSKIA_DIR="$GITHUB_WORKSPACE/deps/skia" \
+            -DSKIA_LIBRARY_DIR="$GITHUB_WORKSPACE/deps/skia/out/Release-x64" \
+            -DSKIA_LIBRARY="$GITHUB_WORKSPACE/deps/skia/out/Release-x64/libskia.a"
+
+      - name: Build
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build src/build --target aseprite --parallel
+
+      - name: Package
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tar -C src/build -czf aseprite-linux.tar.gz bin
+
+      - name: Mark commit as built
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        run: touch .built
+
+      - name: Upload artifact
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aseprite-linux-${{ github.run_number }}-${{ steps.upstream.outputs.sha }}
+          path: aseprite-linux.tar.gz
+          retention-days: 14
