@@ -1,0 +1,118 @@
+# Auto-builds Aseprite for Linux on a schedule and uploads it as a
+# GitHub Actions artifact (private to your repo — download it from the
+# Actions run page, or with `gh run download`).
+#
+# Setup:
+#   1. Create/use a repo of your own (a fork of aseprite/aseprite works,
+#      or even an empty repo — this workflow clones the source itself).
+#   2. Put this file at .github/workflows/build-aseprite.yml in that repo.
+#   3. That's it — it runs on the schedule below, or manually via the
+#      "Run workflow" button (workflow_dispatch).
+#
+# Note on licensing: Aseprite's source is source-available, not fully
+# open-source — you're allowed to compile it for your own use, but
+# redistributing compiled binaries publicly isn't permitted under their
+# EULA. This workflow only produces a private artifact for you to
+# download, so it stays within personal-use territory. Don't make the
+# artifact/repo public in a way that hands out the binary to others.
+#
+# Note on Skia: Aseprite pins a specific Skia branch/release (currently
+# aseprite-m124). If a future Aseprite version bumps that, this workflow
+# will fail at the "Download prebuilt Skia" or "Configure" step — check
+# INSTALL.md's Dependencies section for the current branch name and
+# update SKIA_VERSION / SKIA_URL below accordingly.
+
+name: Build Aseprite (Linux)
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily at 06:00 UTC — edit as you like
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab
+
+env:
+  SKIA_VERSION: m124-08a5439a6b
+  SKIA_URL: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64-libc++.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check latest upstream commit
+        id: upstream
+        run: |
+          SHA=$(git ls-remote https://github.com/aseprite/aseprite.git HEAD | cut -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Look up "already built" marker
+        id: built-cache
+        uses: actions/cache@v4
+        with:
+          path: .built
+          key: aseprite-built-${{ steps.upstream.outputs.sha }}
+
+      - name: Skip notice
+        if: steps.built-cache.outputs.cache-hit == 'true'
+        run: echo "No new upstream commits since the last build — skipping."
+
+      - name: Clone Aseprite source
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        run: git clone --recursive https://github.com/aseprite/aseprite.git src
+
+      - name: Install build dependencies
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ clang cmake ninja-build libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libfontconfig1-dev
+
+      - name: Cache prebuilt Skia
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        id: skia-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/skia
+          key: skia-${{ env.SKIA_VERSION }}
+
+      - name: Download prebuilt Skia
+        if: steps.built-cache.outputs.cache-hit != 'true' && steps.skia-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p deps/skia
+          curl -L "$SKIA_URL" -o skia.zip
+          unzip -q skia.zip -d deps/skia
+          rm skia.zip
+
+      - name: Configure with CMake
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cd src
+          mkdir build && cd build
+          cmake \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_FLAGS:STRING=-stdlib=libstdc++ \
+            -DCMAKE_EXE_LINKER_FLAGS:STRING=-stdlib=libstdc++ \
+            -DLAF_BACKEND=skia \
+            -DSKIA_DIR="$GITHUB_WORKSPACE/deps/skia" \
+            -DSKIA_LIBRARY_DIR="$GITHUB_WORKSPACE/deps/skia/out/Release-x64" \
+            -DSKIA_LIBRARY="$GITHUB_WORKSPACE/deps/skia/out/Release-x64/libskia.a" \
+            -G Ninja ..
+
+      - name: Build
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        run: ninja -C src/build aseprite
+
+      - name: Mark this commit as built
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        run: touch .built
+
+      - name: Upload build artifact
+        if: steps.built-cache.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aseprite-linux-${{ steps.upstream.outputs.sha }}
+          path: src/build/bin/
+          retention-days: 14
