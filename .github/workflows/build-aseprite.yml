@@ -31,7 +31,7 @@ on:
 
 env:
   SKIA_VERSION: m124-08a5439a6b
-  SKIA_URL: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64-libc++.zip
+  SKIA_URL: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64.zip
 
 jobs:
   build:
